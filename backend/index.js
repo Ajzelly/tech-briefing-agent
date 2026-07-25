@@ -53,9 +53,9 @@ async function generateNewsletterContent() {
     return chatCompletion.choices[0]?.message?.content || "The agent failed to parse the text layout.";
 }
 
-// 🏓 PING ROUTE: Keeps Render awake via cron-job.org
+// 🏓 LIGHTWEIGHT PING ROUTE: Keeps Render awake without overloading cron-job.org logs
 app.get('/ping', (req, res) => {
-    res.send("Agent is awake.");
+    res.status(200).send("OK");
 });
 
 // 🌐 READ ROUTE: Get compiled newsletter as JSON (for Frontend/UI)
@@ -71,12 +71,10 @@ app.get('/api/newsletter', async (req, res) => {
 
 // 🧪 ASYNCHRONOUS TEST ROUTE: Prevents Render Gateway Timeout Error
 app.get('/api/test-email', async (req, res) => {
-    // Respond immediately so Render doesn't hit a 30s timeout
     res.json({ 
         message: "⚙️ Email process started in the background! Please check your inbox in ~10-20 seconds." 
     });
 
-    // Run AI Synthesis & Emailing in the background
     try {
         console.log("🧪 Fetching RSS feeds and running Groq AI synthesis...");
         const briefingText = await generateNewsletterContent();
@@ -99,6 +97,36 @@ app.get('/api/test-email', async (req, res) => {
     }
 });
 
+// ⏰ EXTERNAL CRON TRIGGER ROUTE (Can be hit directly by cron-job.org at 9:00 AM)
+app.get('/api/send-daily-briefing', async (req, res) => {
+    res.json({ message: "⚙️ Daily briefing triggered successfully!" });
+
+    if (!isSubscribed) {
+        console.log("⏭️ Email skipped: User is currently unsubscribed.");
+        return;
+    }
+
+    try {
+        console.log("⏰ Daily briefing triggered: Synthesizing tech news...");
+        const briefingText = await generateNewsletterContent();
+
+        const { data, error } = await resend.emails.send({
+            from: 'onboarding@resend.dev',
+            to: process.env.EMAIL_TO,
+            subject: `☀️ Morning Tech Briefing - ${new Date().toLocaleDateString('en-KE')}`,
+            html: `<div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px;"><div style="white-space: pre-wrap;">${briefingText}</div></div>`
+        });
+
+        if (error) {
+            console.error("❌ Resend API Error:", error.message);
+        } else {
+            console.log("🚀 Daily newsletter successfully emailed via Resend! ID:", data.id);
+        }
+    } catch (error) {
+        console.error("❌ Daily briefing failed:", error.message);
+    }
+});
+
 // 🛑 UNSUBSCRIBE ROUTE
 app.post('/api/unsubscribe', (req, res) => {
     isSubscribed = false;
@@ -113,9 +141,9 @@ app.post('/api/subscribe', (req, res) => {
     res.json({ message: "Subscription active!" });
 });
 
-// ⏰ AUTOMATED CRON JOB: Runs at 9:00 AM, Monday through Friday, East Africa Time (EAT)
+// ⏰ INTERNAL NODE CRON JOB: Runs at 9:00 AM, Monday through Friday, East Africa Time (EAT)
 cron.schedule('0 9 * * 1-5', async () => {
-    console.log("⏰ Clock struck 9:00 AM EAT...");
+    console.log("⏰ Internal clock struck 9:00 AM EAT...");
 
     if (!isSubscribed) {
         console.log("⏭️ Email skipped: User is currently unsubscribed.");
