@@ -111,14 +111,15 @@ app.post('/api/subscribe', (req, res) => {
 });
 
 // ⏰ AUTOMATED CRON JOB: Runs at 9:00 AM, Monday through Friday, in Kenya Time (EAT)
-cron.schedule('0 9 * * 1-5', async () => {
-    console.log("⏰ Clock struck 9:00 AM EAT in Nairobi...");
+// ⏰ TEMPORARY TEST CRON: Runs at 13:15 (1:15 PM) on Saturdays (6)
+cron.schedule('15 13 * * 6', async () => {
+    console.log("⏰ Clock struck 1:15 PM EAT on Saturday...");
     
     if (!isSubscribed) {
         console.log("⏭️ Email skipped: User is currently unsubscribed.");
         return;
     }
-
+// ... rest of your email logic stays the same
     try {
         const briefingText = await generateNewsletterContent();
         const unsubscribeLink = `http://localhost:${PORT}/api/unsubscribe`; 
@@ -152,4 +153,11 @@ cron.schedule('0 9 * * 1-5', async () => {
     timezone: "Africa/Nairobi" // 🇰🇪 Locks execution tightly to East Africa Time
 });
 
+// 🏓 PING ROUTE: Keeps the Render server awake without returning massive HTML
+app.get('/ping', (req, res) => {
+    console.log("🏓 Server pinged by cron-job.org to stay awake!");
+    res.send("Agent is awake.");
+});
+
 app.listen(PORT, () => console.log(`🚀 AI Agent Backend running smoothly on http://localhost:${PORT}`));
+
