@@ -2,41 +2,31 @@ const express = require('express');
 const cors = require('cors');
 const Groq = require('groq-sdk');
 const Parser = require('rss-parser');
-const nodemailer = require('nodemailer');
 const cron = require('node-cron');
+const { Resend } = require('resend');
 require('dotenv').config();
 
 const app = express();
-
 const PORT = process.env.PORT || 5000;
 
-// Allow your React application to talk to this backend safely
 app.use(cors());
 app.use(express.json());
 
-// Initialize your Agent tools
+// Initialize Agent tools
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const parser = new Parser();
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Global Subscription State (Saves your preference)
+// Global Subscription State
 let isSubscribed = true;
 
-// 📧 Configure Email Transporter explicitly for Gmail
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-    },
-});
-
-// Helper function that contains your exact Core Agent logic
+// Core AI Briefing Generator Function
 async function generateNewsletterContent() {
-    if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY.includes('your_actual')) {
+    if (!process.env.GROQ_API_KEY) {
         throw new Error("Missing valid Groq API Key.");
     }
 
-    // 1. Tool Execution: Fetch live trending tech news headlines
+    // 1. Fetch live RSS news context from TechCrunch
     const feed = await parser.parseURL('https://techcrunch.com/feed/');
     const topArticles = feed.items.slice(0, 5).map(item => ({
         title: item.title,
@@ -45,7 +35,7 @@ async function generateNewsletterContent() {
 
     const realTimeContext = JSON.stringify(topArticles, null, 2);
 
-    // 2. LLM Synthesis
+    // 2. Synthesize using Groq Llama 3
     const chatCompletion = await groq.chat.completions.create({
         messages: [
             {
@@ -63,101 +53,92 @@ async function generateNewsletterContent() {
     return chatCompletion.choices[0]?.message?.content || "The agent failed to parse the text layout.";
 }
 
-// 🌐 EXISTING ROUTE: For checking manually on your phone/laptop UI
+// 🏓 PING ROUTE: Keeps Render awake via cron-job.org
+app.get('/ping', (req, res) => {
+    res.send("Agent is awake.");
+});
+
+// 🌐 READ ROUTE: Get compiled newsletter as JSON (for Frontend/UI)
 app.get('/api/newsletter', async (req, res) => {
     try {
         const compiledNewsletter = await generateNewsletterContent();
         res.json({ newsletter: compiledNewsletter });
     } catch (error) {
         console.error("AI Agent Error Log:", error);
-        res.status(500).json({ error: error.message || "The AI briefing agent failed to compile today's news." });
+        res.status(500).json({ error: error.message || "Failed to compile newsletter." });
     }
 });
 
-// 🧪 TEMPORARY TEST ROUTE: Trigger an email immediately by visiting this link
+// 🧪 ASYNCHRONOUS TEST ROUTE: Prevents Render Gateway Timeout Error
 app.get('/api/test-email', async (req, res) => {
+    // Respond immediately so Render doesn't hit a 30s timeout
+    res.json({ 
+        message: "⚙️ Email process started in the background! Please check your inbox in ~10-20 seconds." 
+    });
+
+    // Run AI Synthesis & Emailing in the background
     try {
-        console.log("🧪 Triggering instant test email...");
+        console.log("🧪 Fetching RSS feeds and running Groq AI synthesis...");
         const briefingText = await generateNewsletterContent();
 
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
+        console.log("📨 Sending test email via Resend API...");
+        const { data, error } = await resend.emails.send({
+            from: 'onboarding@resend.dev',
             to: process.env.EMAIL_TO,
             subject: `🧪 Test Tech Briefing - ${new Date().toLocaleDateString('en-KE')}`,
-            text: briefingText,
             html: `<div style="font-family: sans-serif; padding: 20px;"><div style="white-space: pre-wrap;">${briefingText}</div></div>`
-        };
+        });
 
-        await transporter.sendMail(mailOptions);
-        res.json({ message: "🚀 Test email sent successfully! Check your Strathmore inbox." });
+        if (error) {
+            console.error("❌ Resend API Error:", error.message);
+        } else {
+            console.log("🚀 Test email sent successfully! Email ID:", data.id);
+        }
     } catch (error) {
-        console.error("❌ Test email failed:", error);
-        res.status(500).json({ error: "Failed to send test email.", details: error.message });
+        console.error("❌ Background email task failed:", error.message);
     }
 });
 
-// 🛑 CANCEL ROUTE: Allows you to unsubscribe instantly
+// 🛑 UNSUBSCRIBE ROUTE
 app.post('/api/unsubscribe', (req, res) => {
     isSubscribed = false;
-    console.log("❌ You have successfully unsubscribed from the daily newsletter.");
-    res.json({ message: "Subscription cancelled successfully. You will no longer receive morning emails." });
+    console.log("❌ User unsubscribed from daily emails.");
+    res.json({ message: "Subscription cancelled successfully." });
 });
 
-// 🔄 RE-SUBSCRIBE ROUTE (Optional convenience)
+// 🔄 RE-SUBSCRIBE ROUTE
 app.post('/api/subscribe', (req, res) => {
     isSubscribed = true;
     console.log("✅ Subscription re-activated!");
-    res.json({ message: "Subscription active! See you at 9:00 AM EAT." });
+    res.json({ message: "Subscription active!" });
 });
 
-// ⏰ AUTOMATED CRON JOB: Runs at 9:00 AM, Monday through Friday, in Kenya Time (EAT)
-// ⏰ TEMPORARY TEST CRON: Runs at 13:15 (1:15 PM) on Saturdays (6)
-cron.schedule('15 13 * * 6', async () => {
-    console.log("⏰ Clock struck 1:15 PM EAT on Saturday...");
-    
+// ⏰ AUTOMATED CRON JOB: Runs at 9:00 AM, Monday through Friday, East Africa Time (EAT)
+cron.schedule('0 9 * * 1-5', async () => {
+    console.log("⏰ Clock struck 9:00 AM EAT...");
+
     if (!isSubscribed) {
         console.log("⏭️ Email skipped: User is currently unsubscribed.");
         return;
     }
-// ... rest of your email logic stays the same
+
     try {
         const briefingText = await generateNewsletterContent();
-        const unsubscribeLink = `http://localhost:${PORT}/api/unsubscribe`; 
 
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
+        await resend.emails.send({
+            from: 'onboarding@resend.dev',
             to: process.env.EMAIL_TO,
             subject: `☀️ Morning Tech Briefing - ${new Date().toLocaleDateString('en-KE')}`,
-            text: `${briefingText}\n\nTo unsubscribe, please send a POST request to${unsubscribeLink}`,
-            html: `
-                <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; color: #333;">
-                    <div style="white-space: pre-wrap;">${briefingText}</div>
-                    <hr style="margin-top: 30px; border: 0; border-top: 1px solid #eee;"/>
-                    <p style="font-size: 12px; color: #888; text-align: center;">
-                        Sent automatically to your inbox. Want out? 
-                        <form action="${unsubscribeLink}" method="POST" style="display:inline;">
-                            <button type="submit" style="background:none; border:none; color:#0066cc; text-decoration:underline; cursor:pointer; padding:0;">Unsubscribe here</button>
-                        </form>
-                    </p>
-                </div>
-            `
-        };
+            html: `<div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px;"><div style="white-space: pre-wrap;">${briefingText}</div></div>`
+        });
 
-        await transporter.sendMail(mailOptions);
-        console.log("🚀 Daily newsletter successfully emailed to your inbox!");
+        console.log("🚀 Scheduled daily newsletter successfully emailed via Resend!");
     } catch (error) {
-        console.error("❌ Failed to process scheduled morning email:", error);
+        console.error("❌ Scheduled email failed:", error.message);
     }
 }, {
     scheduled: true,
-    timezone: "Africa/Nairobi" // 🇰🇪 Locks execution tightly to East Africa Time
+    timezone: "Africa/Nairobi"
 });
 
-// 🏓 PING ROUTE: Keeps the Render server awake without returning massive HTML
-app.get('/ping', (req, res) => {
-    console.log("🏓 Server pinged by cron-job.org to stay awake!");
-    res.send("Agent is awake.");
-});
-
-app.listen(PORT, () => console.log(`🚀 AI Agent Backend running smoothly on http://localhost:${PORT}`));
-
+app.listen(PORT, () => console.log(`🚀 AI Agent running on http://localhost:${PORT}`));
